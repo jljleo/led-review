@@ -211,7 +211,10 @@ def apply_knob(knob: str) -> None:
         mode = knob.split(":", 1)[1]
         # 1M 窗口下按 CTX 比例的档位对 ≤120K 评测任务永不触发（E 旋钮实验观测），
         # 给绝对触发线才有杠杆：60K/120K 是「人为收紧窗口」的压力测试
-        levels = {"baseline": config.CONTEXT_TOKENS - 28_000, "60k": 60_000, "120k": 120_000}
+        # 基线档必须与产品默认同公式（config 高水位余量 = max(5% 窗口, 16K)），
+        # 否则 --knob=compress:baseline 会在配置改后悄悄偏离真实默认
+        _margin = max(16_000, int(config.CONTEXT_TOKENS * 0.05))
+        levels = {"baseline": config.CONTEXT_TOKENS - _margin, "60k": 60_000, "120k": 120_000}
         if mode not in levels:
             sys.exit(f"--knob=compress: 取值 baseline|60k|120k，收到: {mode}")
         high = levels[mode]
