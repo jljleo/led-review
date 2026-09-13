@@ -62,11 +62,13 @@ def test_profile_switch(reload_config):
 
 
 def test_truncation_watermarks_follow_context_window(reload_config):
-    # kimi 档案现在是 1M 窗口：水位按公式走
+    # kimi 档案现在是 1M 窗口：余量 = max(5% 窗口, 16K)，双处公式一致
     reload_config("kimi")
-    assert config.TRUNCATE_HIGH_TOKENS == config.CONTEXT_TOKENS - 28_000
+    margin = max(16_000, int(config.CONTEXT_TOKENS * 0.05))
+    assert config.TRUNCATE_HIGH_TOKENS == config.CONTEXT_TOKENS - margin
+    assert config.TRUNCATE_HIGH_TOKENS == config.get_profile("kimi")["truncate_high_tokens"]
     assert 0 < config.TRUNCATE_LOW_TOKENS < config.TRUNCATE_HIGH_TOKENS
-    # 用 128K 用户档案验证历史调参值不变（公式回归保护）
+    # 128K 档案：5% = 6.4K < 下限 16K → 余量 16K（12.5%，不再吃掉 22% 窗口）
     reload_config("custom128", user_profiles={
         "custom128": {
             "model": "custom-128k",
@@ -75,11 +77,24 @@ def test_truncation_watermarks_follow_context_window(reload_config):
             "context_tokens": 128_000,
         }
     })
-    assert (config.TRUNCATE_HIGH_TOKENS, config.TRUNCATE_LOW_TOKENS) == (100_000, 60_000)
-    # 小窗口模型水位必须同比下移，否则 compact 的防爆兜底失效
+    high = 128_000 - max(16_000, int(128_000 * 0.05))
+    assert config.TRUNCATE_HIGH_TOKENS == high == 112_000
+    assert config.TRUNCATE_LOW_TOKENS == int(high * 0.6)
+    # 256K 档案：5% = 12.8K < 16K → 下限兜底，余量语义一致
     reload_config("kimi-code-256k")
-    assert config.TRUNCATE_HIGH_TOKENS == config.CONTEXT_TOKENS - 28_000
+    assert config.TRUNCATE_HIGH_TOKENS == 256_000 - 16_000 == 240_000
+    # 小窗口模型水位必须同比下移，否则 compact 的防爆兜底失效
     assert 0 < config.TRUNCATE_LOW_TOKENS < config.TRUNCATE_HIGH_TOKENS
+
+
+def test_watermark_margin_scales_with_window():
+    """余量按窗口缩放：1M 档案 5%（52K），小窗口档案被 16K 下限接管——
+    避免旧固定 28K 在 256K/128K 档案上吃掉 11%/22% 窗口。"""
+    margin = lambda ctx: max(16_000, int(ctx * 0.05))  # noqa: E731
+    assert margin(1_048_576) == 52_428      # k3：5% 比例生效
+    assert margin(262_144) == 16_000        # k2.7-code：下限接管
+    assert margin(256_000) == 16_000        # k3-256k：下限接管
+    assert margin(128_000) == 16_000        # 128K 典：下限接管
 
 
 def test_unknown_profile_fails_fast(reload_config):
@@ -115,7 +130,7 @@ def test_get_profile_returns_normalized_dict(reload_config):
     reload_config("kimi-code-256k")
     p = config.get_profile("kimi-code-256k")
     assert p["model"] == "k3-256k"
-    assert p["truncate_high_tokens"] == p["context_tokens"] - 28_000
+    assert p["truncate_high_tokens"] == p["context_tokens"] - max(16_000, int(256_000 * 0.05))
     assert p["truncate_low_tokens"] == int(p["truncate_high_tokens"] * 0.6)
 
 

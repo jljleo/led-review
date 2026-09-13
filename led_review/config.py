@@ -81,7 +81,10 @@ def get_profile(name: str) -> dict:
         if required not in raw:
             raise KeyError(f"档案 {name!r} 缺少必填字段 {required!r}")
     context_tokens = raw.get("context_tokens", 128_000)
-    high = context_tokens - 28_000
+    # 高水位余量 = max(5% 窗口, 16K)：固定值的 28K 在小窗口档案(256K/128K)上
+    # 会吃掉 11%/22% 窗口（见 E 19YY 水位讨论）；比例+下限保证各窗口同安全
+    # 余量：1M→52K（宽裕）、262K→16K（下限）、128K→16K（下限）。
+    high = context_tokens - max(16_000, int(context_tokens * 0.05))
     return {
         "name": name,
         "model": raw["model"],
@@ -222,7 +225,11 @@ SLIM_MIN_SAVINGS_CHARS = 2_000
 # （按 token 而非消息条数：条数与上下文占用无量纲关系，一条大文件结果可顶几十条闲聊）
 # 水位随所选模型的上下文窗口走：kimi 128K 窗口 → 100K/60K，与历史调参一致。
 # 低水位按比例（而非固定减量）取：小窗口模型上固定减量会把滞后带扣成负数。
-TRUNCATE_HIGH_TOKENS = CONTEXT_TOKENS - 28_000  # 硬触发线（窗口预留 ~28K 输出与余量）
+# 高水位余量 = max(5% 窗口, 16K)（同 get_profile 的公式，两处必须一致）：
+# 固定 28K 对 1M 窗口只占 2.7% （宽裕），但对 256K/128K 档案吃掉 11%/22%
+# （紧张）——按比例缩放后各窗口余量语义一致；下限 16K 防小窗口档案
+# 余量被压缩到低于实测撑住的 12K（E13 实拍：120k 档 12K 余量撑过 97K 任务）。
+TRUNCATE_HIGH_TOKENS = CONTEXT_TOKENS - max(16_000, int(CONTEXT_TOKENS * 0.05))
 TRUNCATE_LOW_TOKENS = int(TRUNCATE_HIGH_TOKENS * 0.6)  # 截断目标：切完留 40% 滞后带增长
 
 # --- 单条体积上限（compact.py，投影级）---
